@@ -1,0 +1,1546 @@
+/* ******************************************************************************************************
+   Program  : wizard.js
+   Created  : 23-FEB-2010 Ollie T161180
+   Changed  : 17-Mar-2011 DG F173006 Split navigation and dojs validation
+            : 03-Jun-2011 DG T173439 UTF8 and wizard reload changes
+            :             Added debug code for IE breakpoint watch
+            : 31-Aug-2011 DG F176931 Processing of disabled elements pre-populated (GOGWWD) 
+            :             from a previous pages procedure
+            : 05-Oct-2011 DG F176209 Added function replaceAll
+            : 04-NOV-2011 Carina T165105 Add script to always display wizard page at the top most position
+            : 26-Jul-2012 DG F184301 Added function toCurrency
+            : 28-Oct-2014 DG 202836 Added functions valPhone closeWarning & function bldWarning
+            : 10-Mar-2015 Adele T201172 Add try/catch around checks for dependancies
+            : 01-Sep-2016 Adele F216557 Loop through whole page to check for the errorDiv of dependant fields
+            : 11-May-2018 Adele F228359 ctl.action.name is undefined - check for undefined and change to
+            :             gen.gw1pkg.gw1proc
+            : 21-May-2018 Adele F228359 If you change something here - make sure you increase all the versions 
+            : of the call to wizard.js?v=1 in gw1pkg.sql. This is to flush the browser cache
+            : 16-Jul-2018 Adele F229789 valPhone - change to allow 12 or 13 digits (some int. codes are 3
+            : digits long then '+' + 3Intcode + 9number gives 13
+            : digits long then '+' + 2Intcode + 9number gives 12
+            : 30-Nov-2018 Adele F232477 Single select list - ignore if selectedindex < 0 
+   ******************************************************************************************************
+   function setCookie  This function sets a client-side cookie. 
+                       If no xExpires value is set, cookie is a session cookie.
+   function getCookie  This functions reads & returns the cookie value of the specified 
+                       cookie (by cookie name).
+   function deleteCookie  To delete a cookie, pass name of the cookie to be deleted.
+   function runWizardLov  Dynamic call to wizard LOV pop-up routine.
+   function valDynFields  Validate DEPENDANCIES between various fields
+   function setRedirectTo Setup redirection values for form posting
+   function changeToNameValuePairs Validates isnumber - numeric fields
+                                   Validates mandatory elements
+                                   Sets up descriptions for radio buttons and select lists
+                                   Converts all named inputs to a name value pair for submission to GOGWWD
+   function show(idToShow) Display the object - changes the idToShow elements display to inline-block
+   function hide(idToShow) Hides the object - changes the idToShow elements display to none
+   function showhide(id)   Show the object if hidden or hide the object if displayed
+   function valCheckBox(checkboxToVal,fieldToDisable) Enable/Disable field according to check box selection
+   function getCheckedValue(radioElement) Evaluates radio button elements to get the checked button value
+   function exe_dojs() This function will run through the form and pick up anny 'dojs' attributes.
+                       If found, it will execute the on* trigger for that specific field.
+                       This is done to ensure that fields are setup correctly on load of the page
+                       Handles form field focus
+   function processIs(processName) Return True if the name of the process code is "processName" else return false
+   function displayWhenValSL(fieldToTest, specificValue, idToDisplay) Display "idToDisplay" when the value of the the select 
+                                                                      list is "specificValue"
+   function setVal(ctl,nme,val)    Sets a value for use by LOV
+   
+   function docLoadList Builds and displays the overlib HTML table based on the URL and document category name
+   function docLoadMenu
+   
+   function trim   Trims leading and trailing whitespace
+   function ltrim  Trims leading whitespace
+   function rtrim  Trims trailing whitespace
+   
+   function replaceAll Replace all instances of <replace> with <with_this> in the string <txt>
+   function toCurrency Convert value of object to fixed, rounded decimal value
+   function valPhone  Validate international standard phone numbers
+                      11 Numeric digits following literal '+' excluding spaces
+   function closeWarning Functions to handle warnings generated from the wizard
+   function bldWarning
+*/
+/* X0_VERSION : v04.1.0.0 */
+//*********************************************************************************************************
+// Convert wizard form objects into name (based on the tag name) and value pairs for storage into 
+// the wizard data table (gen.gogwwd)
+// A new form is created dynamically with the name value pairs as inputs which is submitted.
+// storing each object and its value into the wizard data table.
+//*********************************************************************************************************
+var v_redirect_type;
+var v_redirect_value;
+var v_redirect_submit='Y';
+var v_redirect_back='N';
+var v_check_mandatory='Y';
+
+var v_errorMessg = "Please supply missing/correct values";
+
+// Prevent the "enter" key from submitting the form.
+// This is done because the click on the submit/back buttons needs to set the next page
+// And this does not happen when hitting "enter" (Dont know which button was "pressed")
+function stopRKey(x_evt) {
+   var evt = (x_evt) ? x_evt : ((event) ? event : null);
+   var node = (evt.target) ? evt.target : ((evt.srcElement) ? evt.srcElement : null);
+   if ((evt.keyCode == 13) && (node.type=="text" || node.type=="radio" || node.type=="checkbox" || node.type=="select-multiple")) {return false;}
+return true;
+}
+document.onkeypress = stopRKey; 
+
+function setRedirectTo(ctl) {
+ //alert(ctl.getAttribute("redirect_type")+":"+ctl.getAttribute("redirect_value"));
+ v_redirect_type=ctl.getAttribute("redirect_type");
+ v_redirect_value=ctl.getAttribute("redirect_value");
+ 
+ if (ctl.getAttribute("dosubmit")) { v_redirect_submit=ctl.getAttribute("dosubmit"); } 
+ else {v_redirect_submit='Y';}
+ 
+ if (ctl.getAttribute("doback")) { v_redirect_back=ctl.getAttribute("doback"); } 
+ else {v_redirect_back='N';}
+ 
+ if (ctl.getAttribute("checkmandatory")) { v_check_mandatory=ctl.getAttribute("checkmandatory"); } 
+  else {v_check_mandatory='Y';}
+ 
+ 
+}
+
+// get the Error message to be displayed for missing mandatory fields
+function getErrorMsg(ctl,divName) {
+ // Setup the default message
+ var v_errorDescription = 'Missing Mandatory Field';
+ vCurrent = ctl;
+ if (vCurrent) {
+  var v_errorMandatory = document.getElementById(vCurrent.getAttribute("errorDiv")+divName);
+  if (v_errorMandatory) {
+   var v1 = v_errorMandatory.innerHTML;
+   if (v1=='') v1 = v_errorDescription;
+   var v_errorDescription = v1.replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&amp;apos;/gi,"'").replace(/"/gi,"'").replace(/&amp;/gi,"&");
+  }
+ }
+ return v_errorDescription;
+}
+
+
+// Setup dynamic error message for mandatory and validation errors
+function setErrorMsg(ctl,divName) {
+   vCurrent = ctl;
+   var v2 = getErrorMsg(ctl,divName);
+   var vmsg='document.getElementById("'+vCurrent.getAttribute("errorDiv")+'").innerHTML="'+v2+'"';
+   //alert(vmsg);
+   eval(vmsg);
+}
+
+
+// Strip any wierd characters from the string and pass it back
+// Used to evaluate two strings with each other wothout getting messed up in tags-and-stuff
+function noStrangeChars(v_string) {
+return v_string.replace(/&lt;/gi,"").replace(/&gt;/gi,"").replace(/&amp;apos;/gi,"").replace(/'/gi,"").replace(/"/gi,"").replace(/&amp;/gi,"").toLowerCase();
+}
+
+function buildValues(current,xForm) {
+ //alert(current.name+':'+current.type+':'+current.value);
+ // Setup current name - Add 'x_' for picking list selected elements
+ var vCurrentName = current.name;
+
+ // Initialise page sequence and original tag variables
+ vPageSeq = "";
+ vOrigTag = "";
+
+ // Setup the elements Fld div ID
+ vFld = document.getElementById(current.name+'Fld');
+ 
+ // Page sequence indicator
+ if (current.getAttribute("pgseq")) {
+   vPageSeq = current.getAttribute("pgseq");
+ } else {
+   if (current.parentNode.getAttribute("pgseq")) {
+     vPageSeq = current.parentNode.getAttribute("pgseq");
+   } else {
+     if (vFld && vFld.getAttribute("pgseq")) { vPageSeq = vFld.getAttribute("pgseq"); }
+     else { vPageSeq = ""; }
+   }
+ }
+ 
+ // Original tag name  
+ if (current.getAttribute("tag")) {
+   vOrigTag = current.getAttribute("tag");
+ } else {
+   if (current.parentNode.getAttribute("tag")) {
+     vOrigTag = current.parentNode.getAttribute("tag");
+   } else {
+     if (vFld && vFld.getAttribute("tag")) { vOrigTag = vFld.getAttribute("tag"); }
+     else { vOrigTag = ""; }
+   }
+ }
+
+ // Picking list variable append pickinglist prefix to tag code
+ if (current.getAttribute("pickinglist")) {
+   vCurrentName = current.getAttribute("pickinglist")+current.name;
+ }
+
+ if (current.type == 'select-multiple') {
+  var iii;
+  for (iii=0; iii<current.options.length; iii++) {
+   if (current.options[iii].selected) {
+    var xHidn=document.createElement("input");
+    xHidn.setAttribute("type","hidden");
+    xHidn.setAttribute("name","x_name");
+    xHidn.setAttribute("value",vCurrentName);
+    xForm.appendChild(xHidn);
+
+    var xHidn=document.createElement("input");
+    xHidn.setAttribute("type","hidden");
+    xHidn.setAttribute("name","x_value");
+    xHidn.setAttribute("value",current.options[iii].value);
+    xForm.appendChild(xHidn);
+
+    var xHidn=document.createElement("input");
+    xHidn.setAttribute("type","hidden");
+    xHidn.setAttribute("name","x_pgseq");
+    xHidn.setAttribute("value",vPageSeq);
+    xForm.appendChild(xHidn);
+
+    var xHidn=document.createElement("input");
+    xHidn.setAttribute("type","hidden");
+    xHidn.setAttribute("name","x_otag");
+    xHidn.setAttribute("value",vOrigTag);
+    xForm.appendChild(xHidn);
+
+   } // if current.options...
+  } // for loop
+ } else { // current.type != 'select-multiple'
+  // Setup current element value
+  var elementValue="";
+  
+  // All elements - excl. checkbox and radio button
+  if (current.type != 'checkbox' && current.type != 'radio') { 
+   elementValue = current.value; 
+  }
+  
+  // Checkbox elements
+  if (current.type == 'checkbox') {
+   if(current.checked == true) { elementValue = current.value; } 
+   else { elementValue = "NOT_CHECKED"; }
+  }
+  
+  // Radio button elements
+  if (current.type == 'radio') {
+   elementValue = current.value; 
+
+   if (current.checked == true) {
+    // Build the radio element name and value hidden inputs for submission
+    //alert(i+" : "+current.type+" : "+current.value);
+    var xHidn=document.createElement("input");
+    xHidn.setAttribute("type","hidden");
+    xHidn.setAttribute("name","x_name");
+    xHidn.setAttribute("value",vCurrentName);
+    xForm.appendChild(xHidn);
+
+    var xHidn=document.createElement("input");
+    xHidn.setAttribute("type","hidden");
+    xHidn.setAttribute("name","x_value");
+    xHidn.setAttribute("value",elementValue);
+    xForm.appendChild(xHidn);
+
+    var xHidn=document.createElement("input");
+    xHidn.setAttribute("type","hidden");
+    xHidn.setAttribute("name","x_pgseq");
+    xHidn.setAttribute("value",vPageSeq);
+    xForm.appendChild(xHidn);
+
+    var xHidn=document.createElement("input");
+    xHidn.setAttribute("type","hidden");
+    xHidn.setAttribute("name","x_otag");
+    xHidn.setAttribute("value",vOrigTag);
+    xForm.appendChild(xHidn);
+   }
+  } else {
+   // Build the element name and value hidden inputs for submission
+   //alert(i+" : "+current.type+" : "+current.value);
+   var xHidn=document.createElement("input");
+   xHidn.setAttribute("type","hidden");
+   xHidn.setAttribute("name","x_name");
+   xHidn.setAttribute("value",vCurrentName);
+   xForm.appendChild(xHidn);
+
+   var xHidn=document.createElement("input");
+   xHidn.setAttribute("type","hidden");
+   xHidn.setAttribute("name","x_value");
+   xHidn.setAttribute("value",elementValue);
+   xForm.appendChild(xHidn);
+
+   var xHidn=document.createElement("input");
+   xHidn.setAttribute("type","hidden");
+   xHidn.setAttribute("name","x_pgseq");
+   xHidn.setAttribute("value",vPageSeq);
+   xForm.appendChild(xHidn);
+
+   var xHidn=document.createElement("input");
+   xHidn.setAttribute("type","hidden");
+   xHidn.setAttribute("name","x_otag");
+   xHidn.setAttribute("value",vOrigTag);
+   xForm.appendChild(xHidn);
+  }
+ }
+}
+
+// This function converts all the page elements to name value pairs for submission to 
+// wizard data, on submit of the page
+function changeToNameValuePairs(ctl) {
+ var v_focusErrors='';
+ 
+ // Only check mandatory fields if this is a "submit" type and not a "back" function
+ if (v_redirect_submit == 'Y') {
+  // Loop through all page items
+  for (var i=0;i<ctl.length;i++) {
+   var current = ctl.elements[i];
+   var v_err = current.getAttribute("errorDiv");
+   var v_picList = '';
+   // F186051 Hide the complete button when clicked
+   if ((v_redirect_type == 'C') && 
+       (current.type == 'submit') &&
+       (v_focusErrors=='')) {
+    current.disabled=true;
+   }
+   // Setup pickinglist variable
+   if (current.getAttribute("pickinglist")) { v_picList = current.getAttribute("pickinglist"); }
+   // The exception is to ignore testing "picking list" fields
+   // when the special validation attribute to ignore the pickinglist fields
+   // is set at BUTTON level
+   // Please Note: P is when the pickinglist is on the same page as other/non-pickinglist mandatory fields
+   if (v_check_mandatory == 'Y' || 
+      (v_check_mandatory == 'N' && v_picList == '') ||
+      (v_check_mandatory == 'P' && v_picList.length > 0)) {
+    // Check if All mandatory fields are populated
+    if (current.getAttribute("mandatory") == "Y") {
+     if (current.type == 'checkbox') {
+      if (current.checked != true) {
+       // DO NOT report missing mandatory on stuff that is currently hidden by either itself, or its parent DIV's
+       if (current.style.display != 'none' && 
+           current.parentNode.style.display != 'none' &&
+           current.parentNode.parentNode.style.display != 'none' &&
+           current.parentNode.parentNode.parentNode.style.display != 'none') {
+        if (!current.disabled) {
+          setErrorMsg(current,'Msg');
+          if (v_focusErrors=='') { 
+            v_focusErrors=current; 
+          }
+        }
+       }
+      } else { // Clear the message from a previous check
+       var v_currentMessage = document.getElementById(v_err);
+       if (v_currentMessage.innerHTML != '' && noStrangeChars(v_currentMessage.innerHTML) == noStrangeChars(getErrorMsg(current,'Msg'))) { v_currentMessage.innerHTML = ''; }
+      } //if (current.checked != true)
+     } else { //if (current.type == 'checkbox')
+      if (current.value == "-1" || current.value == "" || current.value == " ") {
+      // DO NOT report missing mandatory on stuff that is currently hidden by either itself, or its parent DIV's
+       if (current.style.display != 'none' && 
+           current.parentNode.style.display != 'none' &&
+           current.parentNode.parentNode.style.display != 'none' &&
+           current.parentNode.parentNode.parentNode.style.display != 'none') {
+        if (!current.disabled) {
+          setErrorMsg(current,'Msg');
+          if (v_focusErrors=='') { 
+            v_focusErrors=current; 
+          }
+        }
+       }
+      } else { 
+       // Clear the message from a previous check
+       var v_currentMessage = document.getElementById(v_err);
+       if (v_currentMessage.innerHTML != '' && noStrangeChars(v_currentMessage.innerHTML) == noStrangeChars(getErrorMsg(current,'Msg'))) { v_currentMessage.innerHTML = ''; }
+      }
+     } // else if (current.type == 'checkbox')
+    } //if (current.getAttribute("mandatory") == "Y")
+   
+    // Setup all description fields (Select lists and radio buttons)
+    // Variables: w - field to be evaluated
+    //            x - field to be evaluated + _desc
+    //            y - Checked radio button value
+    //            z - Radio button label value
+    
+    // Radio button
+    if(document.frmOne.elements[i].type=="radio") { // All radio button elements
+     if(document.frmOne.elements[i].checked==true) {
+      var w = document.frmOne.elements[i];
+      var x = document.getElementById(w.name +"_desc");
+      var y = getCheckedValue(w); // Evaluate the radio button
+      if (y!="") {
+       var z = document.getElementById(w.name +"Lbl_"+y); // Set the hidden element value to the radio button labels text
+       x.value = z.innerHTML;
+      }
+     }
+    }
+   
+    // Single select list
+    if(document.frmOne.elements[i].type=="select-one") { // All single select list elements
+     var w = document.frmOne.elements[i];
+     var x = document.getElementById(w.name +"_desc");
+     if (w.selectedIndex >= 0) {
+        x.value = w.options[w.selectedIndex].text;
+     }
+    }
+   
+    // Multiple select list
+    if(document.frmOne.elements[i].type=="select-multiple") { // All multiple select list elements
+     var w = document.frmOne.elements[i];
+     var x = document.getElementById(w.name +"_desc");
+   
+     for (j=0; j<w.length; j++) { 
+      if (w.options[j].selected) { // Set the hidden elements value to the text of the selected item
+       x.value=x.value+'|'+w.options[j].text; 
+      }    
+     }
+    }
+   
+    // Check if All numeric fields are actually Numerical
+    var v_errorDescription = 'Illegal Characters inside a numeric field';
+   
+    if (current.getAttribute("isnumber") == "Y") {
+     if (current.value != "" && current.value != " ") {
+       if (current.value.match(/^[-]?\d*\.?\d*$/) == null || current.value == ".") {
+         document.getElementById(v_err).innerHTML = v_errorDescription;
+         if (v_focusErrors=='') {v_focusErrors=current;}
+       } else { // Clear the message from a previous check
+         var v_currentMessage = document.getElementById(v_err);
+         if (v_currentMessage.innerHTML == v_errorDescription) { v_currentMessage.innerHTML = ''; }
+       }
+     } else {
+       var v_currentMessage = document.getElementById(v_err);
+       if (v_currentMessage.innerHTML == v_errorDescription) { v_currentMessage.innerHTML = ''; }
+     }
+    }
+   }
+  } // for (var i=0;i<ctl.length;i++)
+  // Display any validation errors
+  if (v_focusErrors!='') {
+   alert(v_errorMessg); 
+   eval(v_focusErrors.focus()); 
+   return false;
+  }
+
+  // Now check if there are any DynBGproc errors still on the page that should be fixed.
+  for (var i=2;i<ctl.length;i++) {
+   var current = ctl.elements[i];
+   //alert('Name: '+current.name);
+   var v_err = current.getAttribute("errorDiv");
+   if (v_err) {
+    //alert('v_err: '+v_err);
+    var v_msg = trim(document.getElementById(v_err).innerHTML.replace(/&nbsp;/gi,"").replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&amp;apos;/gi,"'").replace(/&amp;/gi,"&"));
+    // An alert does not like to have an <a> tag included in the text.
+    if (v_msg.toLowerCase().indexOf("<a")>0) { v_msg = "Please resolve all outstanding errors"; }
+    //alert(current.name+': '+v_err+': "'+ v_msg+'"');
+    if (v_err && v_msg != '') { alert(v_msg); current.focus(); return false; }
+   }
+  } //for (var i=2;i<ctl.length;i++)
+ } //if (v_redirect_submit == 'Y')
+
+ // First Ensure that this form does Not Exist. If it does, remove it.
+ var dynamicFormName=ctl.name+"_tmp";
+ window.status="Clearing Previous Values";
+ var xx = document.getElementById(dynamicFormName);
+ if (xx != null) { xx.parentNode.removeChild(document.getElementById(dynamicFormName)); }
+
+ // Now create a new FORM Node
+ window.status="Working";
+
+ //first create a temporary div to store and hide this form in
+ var xDiv=document.createElement("div");
+ xDiv.setAttribute("id",dynamicFormName);
+ document.getElementsByTagName("body").item(0).appendChild(xDiv);
+
+ var formAction = ctl.action.name;
+ var xForm=document.createElement("form");
+ xForm.setAttribute("name",dynamicFormName);
+ xForm.setAttribute("method","post");
+ if (ctl.action == '') 
+ { xForm.setAttribute("action","gen.gw1pkg.gw1proc"); 
+}
+ else 
+ {
+ if (formAction == undefined)
+ {
+  xForm.setAttribute("action","gen.gw1pkg.gw1proc"); 
+ }
+else
+{ xForm.setAttribute("action",ctl.action); 
+
+} 
+ }
+
+ document.getElementById(dynamicFormName).appendChild(xForm);
+ 
+ // Pass along the default name/value pairs
+ 
+ var vPageSeq = "";
+ var vOrigTag = "";
+ 
+ // Redirect type
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_name");
+     xHidn.setAttribute("value","redirect_type");
+     xForm.appendChild(xHidn);
+  var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_value");
+     xHidn.setAttribute("value",v_redirect_type);
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_pgseq");
+     xHidn.setAttribute("value",vPageSeq);
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_otag");
+     xHidn.setAttribute("value",vOrigTag);
+     xForm.appendChild(xHidn);
+ 
+ // Redirect value
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_name");
+     xHidn.setAttribute("value","redirect_value");
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_value");
+     xHidn.setAttribute("value",v_redirect_value);
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_pgseq");
+     xHidn.setAttribute("value",vPageSeq);
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_otag");
+     xHidn.setAttribute("value",vOrigTag);
+     xForm.appendChild(xHidn);
+ 
+ // Submit indicator
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_name");
+     xHidn.setAttribute("value","redirect_submit");
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_value");
+     xHidn.setAttribute("value",v_redirect_submit);
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_pgseq");
+     xHidn.setAttribute("value",vPageSeq);
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_otag");
+     xHidn.setAttribute("value",vOrigTag);
+     xForm.appendChild(xHidn);
+ 
+ // Backwards redirection indicator
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_name");
+     xHidn.setAttribute("value","redirect_back");
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_value");
+     xHidn.setAttribute("value",v_redirect_back);
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_pgseq");
+     xHidn.setAttribute("value",vPageSeq);
+     xForm.appendChild(xHidn);
+ var xHidn=document.createElement("input");
+     xHidn.setAttribute("type","hidden");
+     xHidn.setAttribute("name","x_otag");
+     xHidn.setAttribute("value",vOrigTag);
+     xForm.appendChild(xHidn);
+
+ // Now add the elements from ctl to xForm
+ // alert("Nbr of Items: "+ctl.length);
+ 
+ // First add all non pickinglist elements
+ for (var i=0;i<ctl.length;i++) {
+  current = ctl.elements[i]; // Current element
+  
+  //alert(current.type+' '+current.name);
+  if (!current.getAttribute("pickinglist") && current.name && current.name != "") {
+    buildValues(current,xForm);
+  } //if (current.name != "")
+ } //for (var i=0;i<ctl.length;i++)
+
+ // Now add all pickinglist elements
+ for (var i=0;i<ctl.length;i++) {
+  current = ctl.elements[i]; // Current element
+  
+  //alert(current.type+' '+current.name);
+  if (current.getAttribute("pickinglist") && current.name && current.name != "" && v_check_mandatory!='N') {
+    if (current) buildValues(current,xForm);
+  } //if (current.name != "")
+ } //for (var i=0;i<ctl.length;i++)
+
+ window.status="Done";
+ xForm.submit();
+ 
+ return false;
+}
+
+// Write the raw text elements onto the HTML form
+function codeWrite(ctl) {
+ var aa=document.getElementById('rawText_'+ctl).innerHTML;
+ document.write(aa.replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&amp;apos;/gi,"'").replace(/&amp;/gi,"&"));
+  
+ // Now remove this div from the DOM
+ var xx = document.getElementById('rawText_'+ctl);
+ if (xx != null) {
+  xx.parentNode.removeChild(document.getElementById('rawText_'+ctl));
+ }
+ var xx = document.getElementById('rawScript_'+ctl);
+ if (xx != null) {
+  xx.parentNode.removeChild(document.getElementById('rawScript_'+ctl));
+ }
+}
+
+//*************************************************************************
+// Dynamically create javascript code from the javascript element event and 
+// execute this script. DONT remove as this could happen more than once
+//*************************************************************************
+function eventRun(v_script,ctl) {
+ var aa=document.getElementById('JSText_'+v_script).innerHTML;
+ 
+ var bb = aa.replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&amp;apos;/gi,"'").replace(/&amp;/gi,"&");
+var cc=eval(bb);
+ if (cc==false) {
+   try { 
+     ctl.focus(); 
+     return false;
+   }
+   catch(err) { return false; }
+ }
+return true;
+}
+
+//************************************************************************
+// Dynamically create javascript code from the javascript element text and 
+// execute and remove the script
+//************************************************************************
+function codeRun(ctl) {
+ var aa=document.getElementById('JSText_'+ctl).innerHTML;
+ 
+ var bb = aa.replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&amp;apos;/gi,"'").replace(/&amp;/gi,"&");
+ eval(bb);
+ 
+ // Now remove this div from the DOM
+// var xx = document.getElementById('JSText_'+ctl);
+// if (xx != null) {
+//  xx.parentNode.removeChild(document.getElementById('JSText_'+ctl));
+// }
+// var xx = document.getElementById('JSScript_'+ctl);
+// if (xx != null) {
+//  xx.parentNode.removeChild(document.getElementById('JSScript_'+ctl));
+// }
+}
+
+//******************************************************************************
+// Dynamically create LOV href command code from the JavaScript element text and 
+// execute and remove the script
+//******************************************************************************
+function lovSet(ctl) {
+ var aa=document.getElementById('LOVText_'+ctl).innerHTML;
+ var bb=document.getElementById('LOVHref_'+ctl);
+ bb.href=aa.replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&amp;apos;/gi,"'").replace(/&amp;/gi,"&");
+  
+ // Now remove this div from the DOM
+ var xx = document.getElementById('LOVText_'+ctl);
+ if (xx != null) {
+  xx.parentNode.removeChild(document.getElementById('LOVText_'+ctl));
+ }
+ var xx = document.getElementById('LOVScript_'+ctl);
+ if (xx != null) {
+  xx.parentNode.removeChild(document.getElementById('LOVScript_'+ctl));
+ }
+}
+
+//******************************************************************************
+// Dynamically create LOV clear command code from the JavaScript element text and 
+// execute and remove the script
+//******************************************************************************
+function lovClearSet(ctl) {
+ var aa=document.getElementById('LOVClearTxt_'+ctl).innerHTML;
+ var bb=document.getElementById('LOVClear_'+ctl);
+ bb.href=aa.replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&amp;apos;/gi,"'").replace(/&amp;/gi,"&");
+  
+ // Now remove this div from the DOM
+ var xx = document.getElementById('LOVClearTxt_'+ctl);
+ if (xx != null) {
+  xx.parentNode.removeChild(document.getElementById('LOVClearTxt_'+ctl));
+ }
+ var xx = document.getElementById('LOVClearScript_'+ctl);
+ if (xx != null) {
+  xx.parentNode.removeChild(document.getElementById('LOVClearScript_'+ctl));
+ }
+}
+
+
+//******************************************************************************
+// Dynamically clear LOV code and description
+//******************************************************************************
+function lovClear(ctl) {
+  var v_fld = document.getElementById('LOVClear_'+ctl).getAttribute('fieldval');
+  //alert(v_fld);
+  document.getElementById(v_fld).value = '';
+  document.getElementById(v_fld+'_desc').value = '';
+  // Execute any onchange logic linked to LOV
+  if (document.getElementById(v_fld+'_desc').getAttribute('onchange')) {
+    document.getElementById(v_fld+'_desc').onchange();
+  }
+  // Execute any onblur logic linked to LOV
+  if (document.getElementById(v_fld+'_desc').getAttribute('onblur')) {
+    document.getElementById(v_fld+'_desc').onblur();
+  }
+  void(0);
+}
+
+
+//*************************************************************************
+// Setup and display the HTML calendar from the calendar button created for
+// date elements
+//*************************************************************************
+function showCalendar(ctl) {
+ if (ctl.value == '') {
+  var m_names = new Array("JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC");
+   
+  var now   = new Date();
+  var day   = now.getDate();
+  var month = now.getMonth();
+  var year  = now.getFullYear();
+      
+  ctl.value=day+'-'+m_names[month]+'-'+year;
+ }
+
+ window.dateField=ctl;
+ calendar = window.open('w01pkg.call_cal','cal', 'width=250,height=350');
+ return false;
+}
+
+//*********************************************************************************
+// Display the object - changes the objects display style from none to inline-block
+//*********************************************************************************
+function show(idToShow) {
+ if (document.getElementById) {
+  obj = document.getElementById(idToShow);
+  if (obj) obj.style.display = "inline-block";
+ }
+ return false;
+}
+
+//******************************************************************************
+// Hide the object - changes the objects display style from inline-block to none
+//******************************************************************************
+function hide(idToHide) {
+ if (document.getElementById) {
+  var obj = document.getElementById(idToHide);
+  if (obj) obj.style.display = "none";
+ }
+ return false;
+}
+
+//**********************************************************
+// Show the object if hidden or hide the object if displayed
+//**********************************************************
+function showhide(id) {
+ if (document.getElementById) {
+  obj = document.getElementById(id);
+  if (obj.style.display == "none") { show(id); } 
+  else { hide(id); }
+ }
+ return false;
+}
+
+//*******************************************************************************
+// Return True if the name of the process code is "processName" else return false
+//*******************************************************************************
+function processIs(processName) {
+var v_thisProcess = document.frmOne.process_code;
+if (v_thisProcess && v_thisProcess.value == processName) { return true; }
+return false;
+}
+
+//*************************************************************************
+// Display "idToDisplay" when the name of the process code is "processName"
+//*************************************************************************
+function displayWhenProcess(processName, idToDisplay) {
+if (processIs(processName))
+{
+show(idToDisplay);
+}
+}
+
+//*******************************************************************************
+// Display "idToDisplay" when the value of the the select list is "specificValue"
+//*******************************************************************************
+function displayWhenValSL(fieldToTest, specificValue, idToDisplay) {
+var found=false;
+var i=0;
+ while ( (i < fieldToTest.options.length) && !found) {
+  if (fieldToTest.options[i].selected) {
+   if (fieldToTest.options[i].value == specificValue) {
+    found=true;
+   }
+  }
+  i++;
+ }
+ if (found) {
+  show(idToDisplay);
+ } else {
+  hide(idToDisplay);
+ }
+ return found;
+}
+
+//*******************************************************************************
+// Display "idToDisplay" when the value of the the select list is in "valueArray"
+//*******************************************************************************
+function displayWhenValuesSL(fieldToTest, valueArray, idToDisplay) {
+ found = false;
+ var i=0;
+
+ while( (i < valueArray.length) && !(found) ) {
+  found = displayWhenValSL(fieldToTest, valueArray[i], idToDisplay);
+  i++;
+ }
+}
+
+//***************************************************************
+// Compare the length of the object to the supplied object length
+//***************************************************************
+function checkFieldLength(ctl, maxlen) {
+ if (ctl) {
+  len = ctl.value.length;
+
+  if (maxlen < len) {
+   ctl.value=ctl.value.substring(0,maxlen);
+   alert('You have reached the ' + maxlen + ' characters limit.')
+   ctl.focus();
+  }
+ }
+}
+
+//**************************************************************
+// Displays the number of characters typed into the object field
+// Utililse in both onkeyup and onblur triggers of the object
+//**************************************************************
+function displayCharNumber(ctl,whereToDisplayNbr) {
+ var len = ctl.value.length;
+ var x = document.getElementById(whereToDisplayNbr);
+ x.innerHTML = '';
+ x.innerHTML = len;
+}
+
+//***************************
+// Validates a numeric object
+//***************************
+function isNumber(val){
+ if (val.match(/^\d+$/) != null) return true
+ else return false
+}
+
+//*******************************************************
+// Wizard progress bar display xIndx out of possible xMax
+//*******************************************************
+function showProgressBar(xIndx,xMax) {
+ vPixels=300; //Max width (number of pixels) when 100% processes completed
+ vDetl='';
+ vDetl+='<table cellspacing="0" cellpadding="0"width="98%">';
+ vDetl+='<tbody>';
+ vDetl+=' <tr>';
+ vDetl+='  <td width="'+(xMax*(vPixels/xMax))+'" nowrap>';
+ vDetl+='   <table cellspacing="0" cellpadding="0" border="2" width="'+(xMax*(vPixels/xMax))+'">';
+ vDetl+='    <tr><td><img height="7" src="/itsimages/hbar_front.gif" width='+(xIndx*(vPixels/xMax))+'></td></tr>';
+ vDetl+='   </table>';
+ vDetl+='  </td>';
+ vDetl+='  <td class="thisProc" nowrap>&nbsp;&nbsp;(Step '+xIndx+' of '+xMax+')</td>';
+ vDetl+=' </tr>';
+ vDetl+='</tbody>';
+ vDetl+='</table>';
+
+ // Set the actual detail to display and then display it
+ document.getElementById("progressBar").innerHTML='<html><body>'+vDetl+'</body></html>';
+ document.getElementById("progressBar").style.display="inline-block";
+}
+
+//*************************************************
+// Sets up the errorList fields innerHTML attribute
+//*************************************************
+function showErrorList() {
+ var va = document.getElementById('errorList').innerHTML;
+ var vb = va.replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&amp;apos;/gi,"'").replace(/&amp;/gi,"&");
+ eval(vb);
+}
+
+//****************************************************************************
+// This function will run through the form and pick up anny 'dojs' attributes.
+// If found, it will execute the on* trigger for that specific field.
+// This is done to ensure that fields are setup correctly on load of the page
+// It also sets focus to the first navigable screen field
+// F173006 Split dojs / navigation
+// F176209 Add code to cater for apostrophe test input's and text area's
+//****************************************************************************
+function exe_dojs() {
+  if (document.frmOne) {
+    var v_firstFld='';
+    for (var i=0;i<document.frmOne.length;i++) {
+      var current = document.frmOne.elements[i];
+      var v_sometin = current.getAttribute("dojs");
+      if (v_sometin) {
+        var vr='document.getElementById("'+current.name+'").'+v_sometin+'();';
+        eval(vr);
+      }
+      // Test for apostrophe
+      if (current) { 
+        if (current.type=="text") 
+          current.value = current.value.replace(/&apos;/gi,"'");
+        if (current.type=="textarea") {
+          // Navigate through each textarea DOM element and trim white space
+          current.innerHTML = replaceAll(trim(current.innerHTML),'&nbsp;',"");;
+          current.innerHTML = current.innerHTML.replace(/&amp;apos;/gi,"'");
+        }
+      }
+      if (v_firstFld == '' &&
+          current.parentNode.parentNode.style.display != "none" &&
+          current.type != "hidden" &&
+          current.disabled != true &&
+          current.getAttribute("readonly") != true) {
+        if (current.name ) v_firstFld = current;
+      }
+    }
+  }
+  // Remove Skype formatting
+  var v_ssCode='@media screen {span.skype_pnh_print_container{ display:inline !important;} span.skype_pnh_container{ display:none !important;}} span.skype_pnh_mark{ display:inline !important;}';
+  var xscript=document.createElement('style');
+  xscript.setAttribute('rel','stylesheet');
+  xscript.setAttribute('type','text/css');
+  xscript.setAttribute('id','dieSkypeScum');
+  xscript.setAttribute('text',v_ssCode);
+  document.getElementsByTagName('body').item(0).appendChild(xscript);
+  // Use the following line to populate the DOM (Throw away errors generated by Internet Explorer)
+  try{document.getElementById('dieSkypeScum').innerHTML=v_ssCode;}catch(e){void(0)}
+  // Set focus to first editable field on page
+  // 202836 change focus to setFocus function
+  if (v_firstFld.name ) { 
+    setFocus(v_firstFld); 
+    window.scrollTo(0,0);
+  }
+}
+
+//******************************************************
+// Enable/Disable field according to check box selection
+//******************************************************
+function valCheckBox(checkboxToVal,fieldToDisable) {
+ if (document.getElementById(checkboxToVal).checked == true) {
+  document.getElementById(fieldToDisable).disabled=false;
+ } else {
+  document.getElementById(fieldToDisable).disabled=true;
+ }
+}
+
+//****************************************************************
+// Evaluates radio button elements to get the checked button value
+//****************************************************************
+function getCheckedValue(radioElement) {
+ if(!radioElement) { return ""; } // radioElement is not a radio button
+
+ var radioLength = radioElement.length;
+ if(radioLength == undefined) { // radioElement is a single radio button
+  if(radioElement.checked) { return radioElement.value; }
+  else { return ""; }
+ }
+
+ for(var i = 0; i < radioLength; i++) { // radioElement is an array of radio buttons
+  if(radioElement[i].checked) { return radioElement[i].value; }
+ }
+ return ""; // radioElement is not a radio button
+}
+
+//*******************************************************************
+//Default values for organisation paying fees (ASE05 - orgPayingFees)
+//*******************************************************************
+function displayDefAdress(valueToTest) {
+ switch (valueToTest) {
+ 
+ case "2" : //New Zealand Army
+  //Organisation address
+  document.getElementById('orgName').value = 'HeadQuarters, Military studies';
+  document.getElementById('orgStreetName').value = 'Trentham Military Camp';
+  document.getElementById('orgSuburbName').value = 'Private Bag 905';
+  document.getElementById('orgTown').value = 'Upper Hutt';
+  document.getElementById('orgTown_desc').value = 'Upper Hutt';
+  document.getElementById('orgPostalCode').value = '5140';
+  
+  //Working contact
+  document.getElementById('caseManager').value = '';
+  document.getElementById('branchName').value = '';
+
+  break;
+ 
+ case "4" : //New Zealand Navy
+  //Organisation address
+  document.getElementById('orgName').value = 'Naval Qualification';
+  document.getElementById('orgStreetName').value = 'RNZN College';
+  document.getElementById('orgSuburbName').value = 'Private Bag 32901';
+  document.getElementById('orgTown').value = 'Auckland';
+  document.getElementById('orgTown_desc').value = 'Auckland';
+  document.getElementById('orgPostalCode').value = '0744';
+
+  //Working contact
+  document.getElementById('caseManager').value = '';
+  document.getElementById('branchName').value = '';
+
+  break;
+ 
+ case "5" : //New Zealand Airforce
+  //Organisation address
+  document.getElementById('orgName').value = 'Royal New Zealand Air Force';
+  document.getElementById('orgStreetName').value = 'Defence HQ';
+  document.getElementById('orgSuburbName').value = 'Stout Street';
+  document.getElementById('orgTown').value = 'Wellington';
+  document.getElementById('orgTown_desc').value = 'Wellington';
+  document.getElementById('orgPostalCode').value = '6011';
+
+  //Working contact
+  document.getElementById('caseManager').value = '';
+  document.getElementById('branchName').value = '';
+
+  break;
+ 
+ case "3" : //Other
+  //Organisation address
+  document.getElementById('orgName').value = '';
+  document.getElementById('orgStreetName').value = '';
+  document.getElementById('orgSuburbName').value = '';
+  document.getElementById('orgTown').value = 'Upper Hutt';
+  document.getElementById('orgTown_desc').value = 'Upper Hutt';
+  document.getElementById('orgPostalCode').value = '';
+
+  //Working contact
+  document.getElementById('caseManager').value = '';
+  document.getElementById('branchName').value = '';
+
+  break;
+ 
+ default: //Work and income
+  //Organisation address
+  document.getElementById('orgName').value = '';
+  document.getElementById('orgStreetName').value = '';
+  document.getElementById('orgSuburbName').value = '';
+  document.getElementById('orgTown').value = '';
+  document.getElementById('orgTown_desc').value = '';
+  document.getElementById('orgPostalCode').value = '';
+  document.getElementById('orgContactName').value = '';
+  
+  //Contact details
+  document.getElementById('orgContactSurname').value = '';
+  document.getElementById('orgContactPhoneCode').value = '';
+  document.getElementById('orgContactPhone').value = '';
+  document.getElementById('orgContactFaxCode').value = '';
+  document.getElementById('orgContactFax').value = '';
+  document.getElementById('orgContactEmail').value = '';
+
+  break;  
+ }  
+ return false; 
+}
+
+//****************************************************************
+//When the ASE05 - orgPayingFees field is changed reset any errors
+//****************************************************************
+function resetErrorDiv() {
+  //Organisation address
+  document.getElementById('orgNameGrpErr').innerHTML = '';
+  document.getElementById('orgStreetNameGrpErr').innerHTML = '';
+  document.getElementById('orgSuburbNameGrpErr').innerHTML = '';
+  document.getElementById('orgTownGrpErr').innerHTML = '';
+  document.getElementById('orgPostalCodeGrpErr').innerHTML = '';
+  document.getElementById('orgContactNameGrpErr').innerHTML = '';
+  
+  //Contact details
+  document.getElementById('orgContactSurnameGrpErr').innerHTML = '';
+  document.getElementById('orgContactPhoneCodeGrpErr').innerHTML = '';
+  document.getElementById('orgContactFaxCodeGrpErr').innerHTML = '';
+  document.getElementById('orgContactEmailGrpErr').innerHTML = '';
+  
+  //Working contact
+  document.getElementById('caseManagerGrpErr').innerHTML = '';
+  document.getElementById('branchNameGrpErr').innerHTML = '';
+}
+
+//****************************************************************
+// This function changes all submit buttons into 
+// Normal buttons and then disables them.
+// This is used for a "Display/View Only" functionality 
+// for a specific page. I.e when it is called for viewing purposes 
+// out of gw8app.fmb
+//****************************************************************
+function disableSubmitButtons() {
+  for (var i=0;i<document.frmOne.length;i++) {
+       var current = document.frmOne.elements[i];
+       if (current.type == "submit") {
+           current.disabled=true;
+       }
+        
+  }
+}
+
+//*************************************************************************
+// This is used to allow the user to skip to any of the previous pages that 
+// is flagged as a breadcrumb
+//*************************************************************************
+function skipBackTo(ctl) {
+  location.replace('gen.gw1pkg.gw1breadcrumb?x_sequence='+ctl);
+}
+
+//******************************************************************************************
+// This function sets a client-side cookie.  Only the first 2 parameters are required
+// Rest of the parameters are optional. If no xExpires value is set, cookie is a session 
+// cookie.
+//******************************************************************************************
+function setCookie(xName, xValue) {
+  var vCookieText = escape(xName) + '=' + escape(xValue);
+  vCookieText += '; PATH=/';
+  document.cookie = vCookieText;
+}
+
+//******************************************************************************************
+// This functions reads & returns the cookie value of the specified cookie (by cookie name) 
+//******************************************************************************************
+function getCookie(xName) {
+  var vValue = null;
+  if(document.cookie) {  //only if exists
+    var arr = document.cookie.split((escape(xName) + '='));
+    if(2 <= arr.length) {
+      var arr2 = arr[1].split(';');
+      vValue = unescape(arr2[0]);
+    }
+  }
+  return vValue;
+}
+
+//**********************************************************
+// To delete a cookie, pass name of the cookie to be deleted
+//**********************************************************
+function deleteCookie(xName) {
+  var vTmp = getCookie(xName);
+  if(vTmp) { setCookie(xName,vTmp,(new Date(1))); }
+}
+
+//***********************************************************
+// Validate DEPENDANCIES between various fields
+// WARNING: this is an iterative call (i.e. it calls itself!)
+// WARNING: this is an iterative call (i.e. it calls itself!)
+// WARNING: this is an iterative call (i.e. it calls itself!)
+//***********************************************************
+function valDynFields(xName,xFound) {
+ // If first time then clear message
+ if (!xFound) {
+     try { document.getElementById(document.getElementById(xName+"_desc").getAttribute("errordiv")).innerHTML=''; }
+     catch(err) { try { document.getElementById(document.getElementById(xName).getAttribute("errordiv")).innerHTML=''; } catch(err2) {var x=1;} }
+     }
+
+
+ // Set xFound indicator to pass along to re-iterative call
+ var v_foundDependancies="N";
+ v_foundDependancies=xFound;
+    
+ var v_var="";
+ // Check if this field is dependant on something else
+ var v_attrib = document.getElementById(xName+"_desc").getAttribute("dependant");
+ if (!v_attrib) { v_attrib = document.getElementById(xName).getAttribute("dependant"); }
+
+ // if there is another field dependant on this one and that field is null
+ if (v_attrib) {
+  try {
+  
+  for(cnti=0; cnti<document.frmOne.elements.length; cnti++) {
+  var ele = document.frmOne.elements[cnti];
+   
+  if (ele.id == v_attrib  ){
+    var v_errordiv = document.getElementById(v_attrib).getAttribute("errorDiv");
+  }
+  
+  if (ele.id == v_attrib+"_desc"   ){
+  var v_errordiv = document.getElementById(v_attrib+"_desc").getAttribute("errorDiv");
+  } 
+
+}
+      }
+  catch(err)
+       {
+        var v_errordiv = document.getElementById(v_attrib).getAttribute("errorDiv");
+       }
+
+  if (!document.getElementById(v_errordiv)) 
+    v_errordiv = document.getElementById(v_attrib).getAttribute("errorDiv");
+  if ((document.getElementById(v_attrib).value == '')  || 
+      (document.getElementById(v_attrib).value == ' ') || 
+      (document.getElementById(v_attrib).value == '-1')) {
+   v_var="This field is mandatory for "+document.getElementById(xName+"Prompt").innerHTML.split(':')[0];
+   if (document.getElementById(v_errordiv))
+     document.getElementById(v_errordiv).innerHTML=v_var;
+   
+   v_foundDependancies="Y"
+  }
+  else {
+     if (document.getElementById(v_errordiv)) {
+        if (document.getElementById(v_errordiv).innerHTML.indexOf("This field is mandatory for")>=0) {
+           document.getElementById(v_errordiv).innerHTML="";
+           }
+        }
+  }
+ }
+    
+ // Now see if the previous dependant has a dependant and call itself
+ if (v_attrib) {
+ try {
+   
+   
+   for(cnti=0; cnti<document.frmOne.elements.length; cnti++) {
+   var ele = document.frmOne.elements[cnti];
+   if (ele.id == v_attrib+"_desc"   ){
+    var v_nxtAttrib = document.getElementById(v_attrib+"_desc").getAttribute("dependant");
+   } 
+
+   if (ele.id == v_attrib  ){
+    var v_nxtAttrib = document.getElementById(v_attrib).getAttribute("dependant");
+    if (v_nxtAttrib) { valDynFields(v_attrib,v_foundDependancies); } 
+   }
+ 
+}
+ 
+//  var v_nxtAttrib = document.getElementById(v_attrib+"_desc").getAttribute("dependant"); 
+    }
+ catch(err)
+{
+  var v_nxtAttrib = document.getElementById(v_attrib).getAttribute("dependant"); }
+  if (v_nxtAttrib) { valDynFields(v_attrib,v_foundDependancies); } 
+ }
+
+ // If anything had a problem then stop else continue to LOV
+ if (v_foundDependancies == 'Y') { return false; }
+ return true;
+}
+
+//****************************************************************
+// Resets any subsequent dependant LOV fields
+// Called before LOV PassBack function, called from the LOV window
+//****************************************************************
+function resetDependant(xName) {
+ var vFound="N";
+ var vAttrib;
+ for (var i=0;i<frames.opener.document.frmOne.length;i++) {
+  var vCurrent = frames.opener.document.frmOne.elements[i];
+  if (vCurrent.type=="text" && vCurrent.getAttribute("dependant")) {
+   if (vCurrent.getAttribute("dependant")==xName) {
+    vCurrent.value = ''; 
+    var vCurrentCode = vCurrent.name.replace("_desc","");
+    if (frames.opener.document.getElementById(vCurrentCode)) {
+     frames.opener.document.getElementById(vCurrentCode).value='';
+    }
+    vFound = "Y";
+    vAttrib = vCurrentCode;
+   }
+  }
+ }
+ if (vFound=="Y" && frames.opener.document.getElementById(vAttrib)) { resetDependant(vAttrib); }
+  return true;
+}
+
+// *************************************************************
+// List of values javascript
+// Dynamic call to wizard LOV pop-up routine (gw1pkg.gw1lovbind)
+// *************************************************************
+function runWizardLov
+ (formName,
+  itemName,
+  itemDesc,
+  theFilter,
+  lovCode,
+  showCode,
+  chkSum,
+  codeHeading,
+  descHeading)
+{
+  if (codeHeading == undefined) { codeHeading = "Code"; }
+  if (descHeading == undefined) { descHeading = "Description"; }
+  frmLOV = open("gen.gw1pkg.gw1lovbind" +
+                "?x_thefilter=" + escape(theFilter) +
+                "&x_form_name=" + escape(formName) +
+                "&x_item_name=" + escape(itemName) +
+                "&x_item_desc=" + escape(itemDesc) +
+                "&x_lovcode=" + escape(lovCode) +
+                "&x_showcode=" + escape(showCode) +
+                "&x_chksum=" + escape(chkSum) +
+                "&x_code_heading=" + escape(codeHeading)+
+                "&x_desc_heading=" + escape(descHeading)+
+                "&x_caller_url=" + escape(location.protocol + "//" +
+                                          location.host + location.pathname +
+                                          location.search),
+                "winLOV", 
+                "scrollbars=yes,resizable=yes,width=450,height=400");
+  window.frmLOV.focus(); // Give the LOV window focus
+   
+  if (frmLOV.opener == null) { frmLOV.opener = self; }
+}
+
+//*************************************************************
+// Script to return code/description to the calling form frmOne
+//*************************************************************
+function PassBack(xItemName,xItemDesc,xLovCode,xLovDesc) {
+ if (opener.location.protocol+"//"+opener.location.host+opener.location.pathname+opener.location.search != document.forms[0].x_caller_url.value) {
+  alert("This LOV is out of context. Please close the window and click the appropriate LOV button.");
+  return;
+ }
+  
+ // Populate the appropriate code and description elements with the selected LOV code and description
+ frames.opener.document.getElementById(xItemName).value = xLovCode;
+ frames.opener.document.getElementById(xItemDesc).value = xLovDesc;
+ 
+ // If an onblur attribute exists execute the onblur function
+ if (frames.opener.document.getElementById(xItemDesc).getAttribute("onblur")) {
+  frames.opener.document.getElementById(xItemDesc).onblur();
+ }
+ 
+ // If an onchange attribute exists execute the onchange function
+ if (frames.opener.document.getElementById(xItemDesc).getAttribute("onchange")) {
+  frames.opener.document.getElementById(xItemDesc).onchange();
+ }
+
+ // Close the window
+ close();
+}
+
+// ******************
+// LOV search routine
+// ******************
+function Find_OnClick() {
+ var vSearchstring;
+ if (document.forms[0].x_thefilter.value == "") {
+  document.forms[0].x_thefilter.value = "%";
+  document.forms[0].submit();
+ }
+ else {
+  vSearchstring = document.forms[0].x_thefilter.value;
+  if (vSearchstring.substr(0,1) != "%") {
+   vSearchstring = "%" + vSearchstring;
+  }
+  if (vSearchstring.substr(vSearchstring.length-1,1) != "%") {
+   vSearchstring = vSearchstring + "%";
+  }
+  document.forms[0].x_thefilter.value = vSearchstring;
+  document.forms[0].submit();
+ }
+}
+
+//*************************
+// LOV pop-up close routine
+//*************************
+function Close_OnClick() { close(); }
+
+//*************************
+// Show a page
+//*************************
+function gw1Show(ctl) {
+ location.replace('gen.gw1pkg.gw1Show?x_tag='+ctl.name); 
+}
+
+
+//****************************
+// Sets a value for use by LOV
+//****************************
+function setVal(ctl,v_name) {
+ var v_value = '-1';
+ var v_a = document.getElementById(ctl).children;
+ //alert(v_a.length);
+ for (var i=0; i<v_a.length; i++) {
+  var v_b = v_a[i];
+  //alert(i+': '+v_b.nodeName+' = '+v_b.id +' ('+v_b.id.match(/_desc$/)+')');
+  // If found the Input element used as the Description
+  // Then get the SOD value to be used
+  if (v_b.id.match(/_desc$/) == '_desc') {
+   if (v_b.getAttribute('sod')) { v_value = v_b.getAttribute('sod'); }
+  }
+  // If found the <a> element and the id starts with LOV
+  // Then setup the onclick attribute
+  if (v_b.nodeName == 'A' && v_b.id.substring(0,3) == 'LOV') {
+   var v_c = 'callDynBGproc(\'gen.gw1pkg.gw1valdata\',\'&x_type=G&x_name='+v_name+'&x_value='+v_value+'\');';
+   //alert(v_c);
+   // NOTE: "setAttribute" Does not work in IE, so dont use the next line !!
+   //v_b.setAttribute("onclick",v_c);
+   v_b.onclick=function() { eval(v_c); };
+  }
+ }
+}
+
+//*****************
+// Document loading
+//*****************
+function docLoadList(x_item_url) {
+ window.open(x_item_url,"mywindow", "resizable=yes,scrollbars=yes,width=780,height=505,left=230,top=170");
+}
+
+function docLoadMenu(xURL, xURLName, xCaption) {
+ window.status='Choose an Option';
+ var v_txt='<table width=\'250\' style=\'font-size:9pt;\'><tr><td>';
+ var splitURL = xURL.split('~');
+ var splitURLName = xURLName.split('~');
+ for(i=0;i<splitURL.length;i++) {
+  v_txt = v_txt + '<a href="javascript:docLoadList(&#39;' + splitURL[i] + '&#39;);">' + splitURLName[i] +'</a><br />';
+ }
+ v_txt = v_txt + '</td></tr></table>';
+ if (xCaption == null) 
+  { return overlib(v_txt, STICKY, CAPTION, 'Choose Category', CENTER);}
+ else
+  { return overlib(v_txt, STICKY, CAPTION, xCaption, CENTER);}
+ return false;
+}
+
+//*****************************************
+// Trimming leading and trailing whitespace
+//*****************************************
+function trim(stringToTrim) {
+	return stringToTrim.replace(/^\s+|\s+$/g,"");
+}
+
+function ltrim(stringToTrim) {
+	return stringToTrim.replace(/^\s+/,"");
+}
+
+function rtrim(stringToTrim) {
+	return stringToTrim.replace(/\s+$/,"");
+}
+
+//*************************************************************************
+// Replace all instances of <replace> with <with_this> in the string <txt>
+//*************************************************************************
+function replaceAll(txt, replace, with_this) {  
+  return txt.replace(new RegExp(replace, 'g'),with_this);
+}
+
+//*****************************************
+// This is cicked off on a right click on the mouse
+// via the oncontextmenu attribute set on the main DIV
+//*****************************************
+function showCrumbsOnRC() {
+var v_bcd = document.getElementById('breadCrumbs');
+if (v_bcd) 
+ {
+ var v_inner ='';
+ var v_bcd_a = v_bcd.getElementsByTagName('span');
+ if (v_bcd_a.length)
+    {
+    for (i=1; i<(v_bcd_a.length-1); ++i)
+        {
+        //alert(v_bcd_a[i].innerHTML);
+        v_inner=v_inner+v_bcd_a[i].innerHTML+'<br />';
+        }
+        overlib('<div id="crumbsPopUp">'+v_inner+'</div>',STICKY,CAPTION, 'Quick Link:', CENTER, WIDTH, 250);
+    }
+ }
+return false;
+}
+
+
+//*****************************************
+// give this function the name of the LOV 
+// and it will remove the acutal LOV button
+// Thus ensuring that user cannot change the value
+//*****************************************
+function removeLOVBtn(v_nme) {
+v_btn=document.getElementById(v_nme+'Fld').getElementsByTagName('a').item(0);
+//if (v_btn) { v_btn.parentNode.removeChild(v_btn); }
+if (v_btn) { v_btn.style.display='none'; }
+}
+
+
+//*****************************************
+// give this function the name of the LOV 
+// and it will unhide the acutal LOV button
+// Thus ensuring that user can again change the value
+//*****************************************
+function showLOVBtn(v_nme) {
+v_btn=document.getElementById(v_nme+'Fld').getElementsByTagName('a').item(0);
+//if (v_btn) { v_btn.parentNode.removeChild(v_btn); }
+if (v_btn) { v_btn.style.display='inline-block'; }
+}
+
+//*****************************************
+// Rounding a number to x decimal places
+//*****************************************
+function toCurrency(ctl) {
+  if (ctl) ctl.value = parseFloat(Math.round(ctl.value * 100) / 100).toFixed(2);
+}
+
+//***************************************
+// 194339
+// Generic function navigate to a field
+// Earlier versions of IE/FF has a problem
+// navigating from an input and setting focus
+// if a validation fails
+//***************************************
+function setFocus(vFld) {
+  if (vFld) setTimeout(function(){vFld.focus()}, 10);
+}
+
+//**********************************************
+// 202836
+// Validate international standard phone numbers
+// 11 Numeric digits following literal '+' excluding spaces
+// REGEX explained
+// ^         # Assert position at the beginning of the string.
+// \+        # Match a literal "+" character.
+// (?:       # Group but don't capture...
+//   [0-9]   #   Match a digit.
+//   \x20    #   Match a space character...
+//     ?     #     Between zero and one time.
+// )         # End the noncapturing group.
+//   {10}    # Repeat the preceding group between 10 times.
+//   {10,11}    # Repeat the preceding group 10or11 times.
+// [0-9]     # Match a digit.
+// $         # Assert position at the end of the string.
+// For this discussion the literal space character has been
+// replaced with \x20
+//**********************************************
+function valPhone(vPhoneFld) {
+ var regex = /^\+(?:[0-9] ?){10,11}[0-9]$/;
+ if (vPhoneFld.value=="") {
+  return true;
+ } else {
+   if (regex.test(vPhoneFld.value)) { // Invalid international phone number
+    return true;
+   } else {
+    return false;
+   }
+ }
+}
+
+//*******************************************************
+// Functions to handle warnings generated from the wizard
+//*******************************************************
+function closeWarning(vWarnDiv) { 
+  var yy = document.getElementById(vWarnDiv);
+  yy.style.display="none"; 
+}
+function bldWarning(vWarnDiv,vMsg,posL,posT) {
+  if (vWarnDiv) { 
+   vWarnDiv.style.display="inline-block";
+   vWarnDiv.style.left=posL;
+   vWarnDiv.style.top=posT;
+   vWarnDiv.innerHTML='<table width="200" cellspacing="0" cellpadding="1" border="0" bgcolor="#333399"><tbody><tr><td><table width="100%" cellspacing="0" cellpadding="0" border="0"><tbody><tr><td><b><font size="1" face="Verdana,Arial,Helvetica" color="#FFFFFF">WARNING</font></b></td><td align="RIGHT"><a href="javascript:void(0);" onmouseover="closeWarning(&#34;'+vWarnDiv.id+'&#34;);"><font size="1" face="Verdana,Arial,Helvetica" color="#9999FF">Close Window</font></a></td></tr></tbody></table><table width="100%" cellspacing="0" cellpadding="2" border="0" bgcolor="#FFFFE0"><tbody><tr><td valign="TOP"><font size="1" face="Verdana,Arial,Helvetica" color="#000000">'+vMsg+'</font></td></tr></tbody></table></td></tr></tbody></table>'; 
+  }
+}
